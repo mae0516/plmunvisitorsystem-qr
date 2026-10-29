@@ -1,0 +1,23 @@
+
+{
+  "name": "PLMun Visitor Monitoring System",
+  "short_name": "PLMun Visitors",
+  "description": "Visitor registration, QR scanning, and attendance monitoring for PLMun.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#123b68",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
