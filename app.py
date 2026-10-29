@@ -1925,7 +1925,33 @@ def process_scan():
 
     finally:
         connection.close()
+        
+@app.route("/attendance")
+def attendance():
+    connection = get_db_connection()
 
+    try:
+        records = connection.execute("""
+            SELECT attendance.id,
+                   attendance.visitor_id,
+                   attendance.check_in,
+                   attendance.check_out,
+                   visitors.full_name,
+                   visitors.purpose
+            FROM attendance
+            JOIN visitors
+                ON visitors.id = attendance.visitor_id
+            ORDER BY attendance.id DESC
+        """).fetchall()
+    finally:
+        connection.close()
+
+    return render_page(
+        ATTENDANCE_PAGE,
+        "attendance",
+        page_title="Attendance Records",
+        records=records,
+    )
 
 # =========================================================
 # START APPLICATION
