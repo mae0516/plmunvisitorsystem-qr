@@ -1,0 +1,11 @@
+﻿.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+plmun.db
+plmun_backup_before_migration.db
+check_database.py
+static/qrcodes/
+instance/

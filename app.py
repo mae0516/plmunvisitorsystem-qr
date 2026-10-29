@@ -1,0 +1,1847 @@
+
+import os
+import secrets
+import sqlite3
+from datetime import date, timedelta
+
+import qrcode
+from flask import (
+    Flask,
+    request,
+    redirect,
+    url_for,
+    render_template_string,
+    jsonify,
+)
+
+app = Flask(__name__)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATABASE = os.path.join(BASE_DIR, "plmun.db")
+QR_FOLDER = os.path.join(BASE_DIR, "static", "qrcodes")
+
+os.makedirs(QR_FOLDER, exist_ok=True)
+
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+def get_db_connection():
+    connection = sqlite3.connect(DATABASE, timeout=10)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def create_qr_for_visitor(visitor_id, token):
+    filepath = os.path.join(
+        QR_FOLDER, f"visitor_{visitor_id}.png"
+    )
+
+    qr = qrcode.QRCode(
+        version=1,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(token)
+    qr.make(fit=True)
+
+    image = qr.make_image(
+        fill_color="black",
+        back_color="white",
+    )
+    image.save(filepath)
+
+
+def initialize_database():
+    connection = get_db_connection()
+
+    try:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS visitors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL,
+                contact_number TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(visitors)"
+            ).fetchall()
+        }
+
+        if "qr_token" not in columns:
+            connection.execute(
+                "ALTER TABLE visitors ADD COLUMN qr_token TEXT"
+            )
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS attendance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                visitor_id INTEGER NOT NULL,
+                check_in TEXT DEFAULT CURRENT_TIMESTAMP,
+                check_out TEXT,
+                FOREIGN KEY (visitor_id) REFERENCES visitors(id)
+            )
+        """)
+
+        # Preserve existing visitors and generate missing QR tokens.
+        visitors = connection.execute(
+            "SELECT id, qr_token FROM visitors"
+        ).fetchall()
+
+        for visitor in visitors:
+            token = visitor["qr_token"]
+
+            if not token:
+                token = secrets.token_urlsafe(32)
+                connection.execute(
+                    "UPDATE visitors SET qr_token = ? WHERE id = ?",
+                    (token, visitor["id"]),
+                )
+
+            create_qr_for_visitor(visitor["id"], token)
+
+        connection.commit()
+
+    finally:
+        connection.close()
+
+
+# =========================================================
+# PROFESSIONAL SHARED DESIGN
+# =========================================================
+
+BASE_STYLE = """
+:root {
+    --green: #08633f;
+    --green-dark: #064b32;
+    --green-light: #e7f5ec;
+    --page: #f4f7f5;
+    --white: #ffffff;
+    --text: #1e293b;
+    --muted: #718096;
+    --border: #e4ebe6;
+    --red: #b42318;
+    --shadow: 0 5px 22px rgba(15, 45, 30, .055);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text);
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+a {
+    color: var(--green);
+    text-decoration: none;
+}
+
+a:hover {
+    color: var(--green-dark);
+}
+
+.app-shell {
+    min-height: 100vh;
+}
+
+.sidebar {
+    width: 252px;
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    padding: 25px 17px;
+    background: var(--green-dark);
+    color: white;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 9px 27px;
+    border-bottom: 1px solid rgba(255,255,255,.14);
+}
+
+.brand-mark {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 46px;
+    height: 46px;
+    border-radius: 13px;
+    background: white;
+    color: var(--green-dark);
+    font-size: 23px;
+    font-weight: 800;
+}
+
+.brand-name {
+    color: white;
+    font-size: 18px;
+    font-weight: 750;
+    line-height: 1.25;
+}
+
+.brand-subtitle {
+    margin-top: 4px;
+    color: #c6e6d3;
+    font-size: 11px;
+}
+
+.nav-label {
+    margin: 26px 10px 10px;
+    color: #a9d0ba;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.3px;
+    text-transform: uppercase;
+}
+
+.nav-link {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 3px 0;
+    padding: 12px 13px;
+    border-radius: 9px;
+    color: #e3f0e8;
+    font-weight: 550;
+    transition: background .2s;
+}
+
+.nav-link:hover,
+.nav-link.active {
+    background: rgba(255,255,255,.14);
+    color: white;
+}
+
+.nav-icon {
+    width: 23px;
+    text-align: center;
+    font-size: 17px;
+}
+
+.sidebar-footer {
+    margin-top: auto;
+    padding: 17px 10px 0;
+    border-top: 1px solid rgba(255,255,255,.14);
+    color: #c6e6d3;
+    font-size: 11px;
+}
+
+.main-area {
+    min-height: 100vh;
+    margin-left: 252px;
+}
+
+.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 15px;
+    padding: 20px 34px;
+    background: white;
+    border-bottom: 1px solid var(--border);
+}
+
+.topbar-label {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.topbar-title {
+    margin-top: 2px;
+    color: var(--green-dark);
+    font-size: 15px;
+    font-weight: 750;
+}
+
+.admin-chip {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--text);
+    font-weight: 600;
+}
+
+.admin-avatar {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--green-light);
+    color: var(--green-dark);
+    font-weight: 800;
+}
+
+.content {
+    width: 100%;
+    max-width: 1450px;
+    margin: auto;
+    padding: 30px 34px 45px;
+}
+
+.page-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 15px;
+    margin-bottom: 24px;
+}
+
+.eyebrow {
+    color: var(--green);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+}
+
+h1, h2, h3, p {
+    margin-top: 0;
+}
+
+h1 {
+    margin-bottom: 7px;
+    color: #173b2b;
+    font-size: clamp(23px, 3vw, 30px);
+    line-height: 1.3;
+    letter-spacing: -.5px;
+}
+
+h2 {
+    margin-bottom: 16px;
+    color: #173b2b;
+    font-size: 18px;
+}
+
+h3 {
+    color: #34483c;
+    font-size: 14px;
+}
+
+.subtitle {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+    margin-bottom: 25px;
+}
+
+.stat-card {
+    position: relative;
+    overflow: hidden;
+    padding: 23px;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    box-shadow: var(--shadow);
+}
+
+.stat-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.stat-label {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.stat-icon {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    border-radius: 11px;
+    background: var(--green-light);
+    color: var(--green);
+    font-size: 20px;
+}
+
+.stat-number {
+    margin: 17px 0 3px;
+    color: #173b2b;
+    font-size: 34px;
+    font-weight: 800;
+    line-height: 1.1;
+}
+
+.stat-foot {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.grid-two {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(260px, 1fr);
+    gap: 20px;
+    align-items: start;
+}
+
+.panel {
+    min-width: 0;
+    margin-bottom: 22px;
+    padding: 24px;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    box-shadow: var(--shadow);
+}
+
+.panel-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 18px;
+}
+
+.panel-heading h2 {
+    margin: 0;
+}
+
+.quick-links {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.quick-link {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 15px 13px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    transition: border .2s, background .2s;
+}
+
+.quick-link:hover {
+    background: #f4faf6;
+    border-color: #a6d5b7;
+    color: var(--green-dark);
+}
+
+.quick-icon {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 39px;
+    height: 39px;
+    border-radius: 10px;
+    background: var(--green-light);
+    color: var(--green);
+    font-size: 18px;
+}
+
+.quick-link strong {
+    display: block;
+    font-size: 12px;
+}
+
+.quick-link small {
+    display: block;
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.button,
+button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 41px;
+    padding: 10px 16px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--green);
+    color: white;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: center;
+    cursor: pointer;
+    transition: background .2s;
+}
+
+.button:hover,
+button:hover {
+    background: var(--green-dark);
+    color: white;
+}
+
+.button-secondary {
+    border-color: var(--border);
+    background: white;
+    color: #334155;
+}
+
+.button-secondary:hover {
+    background: #f4f7f5;
+    color: var(--green-dark);
+}
+
+.button-small {
+    min-height: 33px;
+    padding: 7px 11px;
+    font-size: 12px;
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 17px;
+}
+
+.form-group {
+    min-width: 0;
+}
+
+.form-group.full {
+    grid-column: 1 / -1;
+}
+
+label {
+    display: block;
+    margin: 0 0 7px;
+    color: #34483c;
+    font-size: 12px;
+    font-weight: 750;
+}
+
+input, select, textarea {
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    margin: 0 0 18px;
+    padding: 11px 13px;
+    border: 1px solid #d7e1da;
+    border-radius: 8px;
+    outline: none;
+    background: white;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+}
+
+input:focus, select:focus, textarea:focus {
+    border-color: var(--green);
+    box-shadow: 0 0 0 3px rgba(8,99,63,.10);
+}
+
+.form-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    font-size: 12px;
+}
+
+th, td {
+    padding: 14px 15px;
+    border-bottom: 1px solid #edf1ee;
+    text-align: left;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+th {
+    background: #f4f8f5;
+    color: #486052;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .4px;
+    text-transform: uppercase;
+}
+
+tbody tr:hover {
+    background: #f9fcfa;
+}
+
+tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.visitor-name {
+    color: #173b2b;
+    font-weight: 750;
+}
+
+.muted {
+    color: var(--muted);
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 9px;
+    border-radius: 30px;
+    background: #eef2f0;
+    color: #53645a;
+    font-size: 10px;
+    font-weight: 750;
+}
+
+.badge-green {
+    background: #e4f6eb;
+    color: #087443;
+}
+
+.badge-red {
+    background: #feeeee;
+    color: #b42318;
+}
+
+.qr-image {
+    display: block;
+    width: 190px;
+    max-width: 100%;
+    margin: 15px auto;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: white;
+}
+
+.qr-small {
+    display: block;
+    width: 64px;
+    height: 64px;
+    object-fit: contain;
+}
+
+.qr-result {
+    margin-top: 22px;
+    padding: 24px;
+    border: 1px solid #b8e0c5;
+    border-radius: 12px;
+    background: #f4fbf6;
+    text-align: center;
+}
+
+.qr-result h2 {
+    color: var(--green-dark);
+}
+
+.alert {
+    margin-bottom: 18px;
+    padding: 13px 15px;
+    border: 1px solid #b8e0c5;
+    border-radius: 8px;
+    background: #f0faf3;
+    color: #08633f;
+    overflow-wrap: anywhere;
+}
+
+.alert-error {
+    border-color: #f2c5c1;
+    background: #fff4f2;
+    color: var(--red);
+}
+
+.chart {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-around;
+    gap: 12px;
+    min-height: 205px;
+    padding: 20px 5px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.chart-item {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 9px;
+    height: 180px;
+    min-width: 0;
+}
+
+.chart-value {
+    color: #53645a;
+    font-size: 11px;
+    font-weight: 750;
+}
+
+.chart-bar-wrap {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    width: 100%;
+    height: 125px;
+}
+
+.chart-bar {
+    width: min(36px, 75%);
+    min-height: 4px;
+    border-radius: 7px 7px 2px 2px;
+    background: linear-gradient(180deg, #22a06b, #08633f);
+}
+
+.chart-label {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.empty-state {
+    padding: 35px 15px;
+    color: var(--muted);
+    text-align: center;
+}
+
+.scanner-panel {
+    max-width: 700px;
+    margin: auto;
+}
+
+#reader {
+    width: 100%;
+    max-width: 480px;
+    margin: 20px auto;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+
+#message {
+    margin-top: 16px;
+    padding: 15px;
+    border-radius: 9px;
+    background: #eef6f0;
+    color: var(--green-dark);
+    overflow-wrap: anywhere;
+}
+
+#message.error {
+    background: #fff0ee;
+    color: var(--red);
+}
+
+.footer-note {
+    padding-top: 20px;
+    color: var(--muted);
+    font-size: 11px;
+    text-align: center;
+}
+
+@media (max-width: 1050px) {
+    .sidebar {
+        width: 215px;
+    }
+
+    .main-area {
+        margin-left: 215px;
+    }
+
+    .content {
+        padding: 25px 22px;
+    }
+
+    .topbar {
+        padding: 18px 22px;
+    }
+
+    .stats-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid-two {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 700px) {
+    .sidebar {
+        position: relative;
+        width: 100%;
+        padding: 13px;
+    }
+
+    .brand {
+        padding: 0 5px 13px;
+    }
+
+    .nav-label {
+        margin: 14px 6px 6px;
+    }
+
+    .nav-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 3px 7px;
+    }
+
+    .nav-link {
+        margin: 0;
+        padding: 10px 8px;
+        font-size: 12px;
+    }
+
+    .nav-icon {
+        font-size: 15px;
+    }
+
+    .sidebar-footer {
+        display: none;
+    }
+
+    .main-area {
+        margin-left: 0;
+    }
+
+    .topbar {
+        padding: 13px 16px;
+    }
+
+    .content {
+        padding: 21px 14px 30px;
+    }
+
+    .stats-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .stat-card {
+        padding: 18px;
+    }
+
+    .stat-number {
+        font-size: 29px;
+    }
+
+    .panel {
+        padding: 17px;
+    }
+
+    .form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .form-group.full {
+        grid-column: auto;
+    }
+
+    .quick-links {
+        grid-template-columns: 1fr;
+    }
+
+    .admin-chip span {
+        display: none;
+    }
+
+    h1 {
+        font-size: 24px;
+    }
+}
+"""
+
+
+# =========================================================
+# SHARED NAVIGATION
+# =========================================================
+
+def render_page(template, active, **context):
+    context.update({
+        "style": BASE_STYLE,
+        "active": active,
+        "year": date.today().year,
+    })
+    return render_template_string(template, **context)
+
+
+SHELL_START = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page_title }} | PLMun Visitor System</title>
+    <style>{{ style|safe }}</style>
+</head>
+<body>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="brand-mark">P</div>
+            <div>
+                <div class="brand-name">PLMun</div>
+                <div class="brand-subtitle">Visitor Management</div>
+            </div>
+        </div>
+
+        <div class="nav-label">Main Menu</div>
+        <nav class="nav-list">
+            <a class="nav-link {% if active == 'dashboard' %}active{% endif %}"
+               href="{{ url_for('dashboard') }}">
+                <span class="nav-icon">⌂</span> Dashboard
+            </a>
+            <a class="nav-link {% if active == 'register' %}active{% endif %}"
+               href="{{ url_for('register') }}">
+                <span class="nav-icon">＋</span> Register Visitor
+            </a>
+            <a class="nav-link {% if active == 'visitors' %}active{% endif %}"
+               href="{{ url_for('visitors_page') }}">
+                <span class="nav-icon">♙</span> Visitor List
+            </a>
+            <a class="nav-link {% if active == 'scanner' %}active{% endif %}"
+               href="{{ url_for('scanner') }}">
+                <span class="nav-icon">▦</span> QR Scanner
+            </a>
+            <a class="nav-link {% if active == 'attendance' %}active{% endif %}"
+               href="{{ url_for('attendance') }}">
+                <span class="nav-icon">☷</span> Attendance Logs
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <strong>PLMun</strong><br>
+            Visitor Monitoring System<br>
+            © {{ year }}
+        </div>
+    </aside>
+
+    <div class="main-area">
+        <header class="topbar">
+            <div>
+                <div class="topbar-label">PAMANTASAN NG LUNGSOD NG MUNTINLUPA</div>
+                <div class="topbar-title">Visitor Monitoring &amp; Attendance</div>
+            </div>
+            <div class="admin-chip">
+                <div class="admin-avatar">A</div>
+                <span>Administrator</span>
+            </div>
+        </header>
+        <main class="content">
+"""
+
+SHELL_END = """
+            <div class="footer-note">
+                PLMun Visitor Monitoring System · QR-Based Attendance
+            </div>
+        </main>
+    </div>
+</div>
+</body>
+</html>
+"""
+
+
+# =========================================================
+# DASHBOARD
+# =========================================================
+
+DASHBOARD_PAGE = SHELL_START + """
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">Overview</div>
+        <h1>Dashboard</h1>
+        <p class="subtitle">
+            Monitor visitor registrations and attendance activity.
+        </p>
+    </div>
+    <a class="button" href="{{ url_for('register') }}">＋ Register Visitor</a>
+</div>
+
+<div class="stats-grid">
+    <section class="stat-card">
+        <div class="stat-top">
+            <div class="stat-label">Total Registered Visitors</div>
+            <div class="stat-icon">♙</div>
+        </div>
+        <div class="stat-number">{{ total_visitors }}</div>
+        <div class="stat-foot">All registered visitor profiles</div>
+    </section>
+
+    <section class="stat-card">
+        <div class="stat-top">
+            <div class="stat-label">Currently Inside</div>
+            <div class="stat-icon">⌂</div>
+        </div>
+        <div class="stat-number">{{ inside_count }}</div>
+        <div class="stat-foot">Visits without a recorded checkout</div>
+    </section>
+
+    <section class="stat-card">
+        <div class="stat-top">
+            <div class="stat-label">Total Visit Records</div>
+            <div class="stat-icon">▤</div>
+        </div>
+        <div class="stat-number">{{ attendance_count }}</div>
+        <div class="stat-foot">Recorded check-in sessions</div>
+    </section>
+</div>
+
+<div class="grid-two">
+    <section class="panel">
+        <div class="panel-heading">
+            <div>
+                <h2>Attendance Activity</h2>
+                <p class="subtitle">Daily check-ins over the last 7 days</p>
+            </div>
+            <span class="badge badge-green">Last 7 days</span>
+        </div>
+
+        <div class="chart">
+            {% for item in chart_data %}
+            <div class="chart-item">
+                <div class="chart-value">{{ item.count }}</div>
+                <div class="chart-bar-wrap">
+                    <div class="chart-bar"
+                         style="height: {{ item.height }}%;"
+                         title="{{ item.count }} check-ins"></div>
+                </div>
+                <div class="chart-label">{{ item.label }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        <p class="subtitle" style="margin-top:15px">
+            Chart is based on saved attendance records.
+        </p>
+    </section>
+
+    <section class="panel">
+        <div class="panel-heading">
+            <h2>Quick Actions</h2>
+        </div>
+        <div class="quick-links">
+            <a class="quick-link" href="{{ url_for('register') }}">
+                <span class="quick-icon">＋</span>
+                <span>
+                    <strong>Register Visitor</strong>
+                    <small>Create a visitor profile</small>
+                </span>
+            </a>
+            <a class="quick-link" href="{{ url_for('scanner') }}">
+                <span class="quick-icon">▦</span>
+                <span>
+                    <strong>Scan QR Code</strong>
+                    <small>Record check-in/out</small>
+                </span>
+            </a>
+            <a class="quick-link" href="{{ url_for('visitors_page') }}">
+                <span class="quick-icon">♙</span>
+                <span>
+                    <strong>Visitor Directory</strong>
+                    <small>View registered visitors</small>
+                </span>
+            </a>
+            <a class="quick-link" href="{{ url_for('attendance') }}">
+                <span class="quick-icon">☷</span>
+                <span>
+                    <strong>Attendance Logs</strong>
+                    <small>Review visit history</small>
+                </span>
+            </a>
+        </div>
+    </section>
+</div>
+
+<section class="panel">
+    <div class="panel-heading">
+        <div>
+            <h2>Recent Attendance</h2>
+            <p class="subtitle">Latest visitor check-in records</p>
+        </div>
+        <a href="{{ url_for('attendance') }}">View all →</a>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Visitor</th>
+                    <th>Purpose</th>
+                    <th>Check-In</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for record in recent_records %}
+                <tr>
+                    <td>
+                        <div class="visitor-name">{{ record.full_name }}</div>
+                        <span class="muted">ID #{{ record.visitor_id }}</span>
+                    </td>
+                    <td>{{ record.purpose }}</td>
+                    <td>{{ record.check_in or '-' }}</td>
+                    <td>
+                        {% if record.check_out %}
+                            <span class="badge">Checked out</span>
+                        {% else %}
+                            <span class="badge badge-green">Currently inside</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4">
+                        <div class="empty-state">No attendance records yet.</div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+""" + SHELL_END
+
+
+# =========================================================
+# VISITOR REGISTRATION
+# =========================================================
+
+REGISTER_PAGE = SHELL_START + """
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">Visitor Management</div>
+        <h1>Register Visitor</h1>
+        <p class="subtitle">
+            Enter visitor information to generate a unique QR code.
+        </p>
+    </div>
+    <a class="button button-secondary" href="{{ url_for('visitors_page') }}">
+        View Visitors
+    </a>
+</div>
+
+<section class="panel">
+    <div class="panel-heading">
+        <h2>Visitor Information</h2>
+        <span class="badge">Required fields *</span>
+    </div>
+
+    {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('register') }}">
+        <div class="form-grid">
+            <div class="form-group">
+                <label for="full_name">Full Name *</label>
+                <input id="full_name" name="full_name"
+                       placeholder="Enter visitor's full name"
+                       maxlength="150" required>
+            </div>
+
+            <div class="form-group">
+                <label for="contact_number">Contact Number *</label>
+                <input id="contact_number" name="contact_number"
+                       type="tel" placeholder="Enter contact number"
+                       maxlength="40" required>
+            </div>
+
+            <div class="form-group full">
+                <label for="purpose">Purpose of Visit *</label>
+                <input id="purpose" name="purpose"
+                       placeholder="e.g. Meeting, transaction, campus visit"
+                       maxlength="250" required>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit">＋ Register &amp; Generate QR</button>
+            <a class="button button-secondary"
+               href="{{ url_for('dashboard') }}">Cancel</a>
+        </div>
+    </form>
+
+    {% if latest_visitor %}
+    <div class="qr-result">
+        <h2>✓ Visitor Registered Successfully</h2>
+        <p class="subtitle">A QR code has been generated for this visitor.</p>
+        <img class="qr-image"
+             src="{{ url_for('static', filename='qrcodes/visitor_' ~ latest_visitor.id ~ '.png') }}"
+             alt="Visitor QR Code">
+        <p><strong>Visitor ID:</strong> {{ latest_visitor.id }}</p>
+        <p><strong>Name:</strong> {{ latest_visitor.full_name }}</p>
+        <p><strong>Purpose:</strong> {{ latest_visitor.purpose }}</p>
+        <div class="form-actions" style="justify-content:center">
+            <a class="button"
+               href="{{ url_for('static', filename='qrcodes/visitor_' ~ latest_visitor.id ~ '.png') }}"
+               target="_blank" rel="noopener">Open QR Image</a>
+            <button type="button" class="button-secondary"
+                    onclick="window.print()">Print Page</button>
+        </div>
+    </div>
+    {% endif %}
+</section>
+""" + SHELL_END
+
+
+# =========================================================
+# VISITOR LIST
+# =========================================================
+
+VISITORS_PAGE = SHELL_START + """
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">Visitor Management</div>
+        <h1>Registered Visitors</h1>
+        <p class="subtitle">
+            View visitor profiles and their generated QR codes.
+        </p>
+    </div>
+    <a class="button" href="{{ url_for('register') }}">＋ Add Visitor</a>
+</div>
+
+<section class="panel">
+    <div class="panel-heading">
+        <h2>Visitor Directory</h2>
+        <span class="badge badge-green">{{ visitors|length }} shown</span>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Visitor ID</th>
+                    <th>Full Name</th>
+                    <th>Contact Number</th>
+                    <th>Purpose</th>
+                    <th>Date Registered</th>
+                    <th>QR Code</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for visitor in visitors %}
+                <tr>
+                    <td>#{{ visitor.id }}</td>
+                    <td><div class="visitor-name">{{ visitor.full_name }}</div></td>
+                    <td>{{ visitor.contact_number }}</td>
+                    <td>{{ visitor.purpose }}</td>
+                    <td>{{ visitor.created_at or '-' }}</td>
+                    <td>
+                        <a href="{{ url_for('static', filename='qrcodes/visitor_' ~ visitor.id ~ '.png') }}"
+                           target="_blank" rel="noopener">
+                            <img class="qr-small"
+                                 src="{{ url_for('static', filename='qrcodes/visitor_' ~ visitor.id ~ '.png') }}"
+                                 alt="QR code for {{ visitor.full_name }}">
+                        </a>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6">
+                        <div class="empty-state">
+                            No visitors registered yet.
+                            <br><br>
+                            <a class="button" href="{{ url_for('register') }}">
+                                Register First Visitor
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+""" + SHELL_END
+
+
+# =========================================================
+# QR SCANNER
+# =========================================================
+
+SCANNER_PAGE = SHELL_START + """
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">Attendance Management</div>
+        <h1>QR Code Scanner</h1>
+        <p class="subtitle">
+            Scan a registered visitor's QR code to record attendance.
+        </p>
+    </div>
+    <span class="badge badge-green">Camera Scanner</span>
+</div>
+
+<section class="panel scanner-panel">
+    <div class="panel-heading">
+        <h2>Scan Visitor QR</h2>
+    </div>
+
+    <p class="subtitle">
+        Allow camera access when your browser asks. After each successful
+        scan, review the result before scanning the next visitor.
+    </p>
+
+    <div id="reader"></div>
+    <div id="message" role="status" aria-live="polite">
+        Preparing scanner...
+    </div>
+
+    <button id="nextButton" type="button" hidden>
+        ▦ Scan Next Visitor
+    </button>
+
+    <p class="subtitle" style="margin-top:18px">
+        Note: The first scan checks a visitor in. A subsequent scan checks
+        out that visitor if their visit is still open.
+    </p>
+</section>
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+<script>
+const messageBox = document.getElementById("message");
+const nextButton = document.getElementById("nextButton");
+let scanner = null;
+let processing = false;
+let scannerRunning = false;
+
+function showMessage(message, isError = false) {
+    messageBox.textContent = message;
+    messageBox.classList.toggle("error", isError);
+}
+
+async function startScanner() {
+    processing = false;
+    nextButton.hidden = true;
+
+    if (!window.isSecureContext && location.hostname !== "localhost") {
+        showMessage(
+            "Camera access requires HTTPS. Open this page through a secure HTTPS address.",
+            true
+        );
+        return;
+    }
+
+    if (typeof Html5Qrcode === "undefined") {
+        showMessage(
+            "The QR scanner library did not load. Check your internet connection and refresh.",
+            true
+        );
+        return;
+    }
+
+    try {
+        if (!scanner) {
+            scanner = new Html5Qrcode("reader");
+        }
+
+        const cameras = await Html5Qrcode.getCameras();
+
+        if (!cameras || cameras.length === 0) {
+            showMessage(
+                "No camera found. Check camera permission and try again.",
+                true
+            );
+            return;
+        }
+
+        const rearCamera = cameras.find(camera =>
+            /back|rear|environment/i.test(camera.label)
+        );
+
+        const cameraId = rearCamera ? rearCamera.id : cameras[0].id;
+
+        await scanner.start(
+            cameraId,
+            {
+                fps: 10,
+                qrbox: { width: 230, height: 230 }
+            },
+            async decodedText => {
+                if (processing) return;
+
+                processing = true;
+                showMessage("QR detected. Saving attendance...");
+
+                try {
+                    if (scannerRunning) {
+                        await scanner.stop();
+                        scannerRunning = false;
+                    }
+                } catch (error) {
+                    console.warn("Could not stop scanner:", error);
+                }
+
+                try {
+                    const response = await fetch(
+                        "{{ url_for('process_scan') }}",
+                        {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({ token: decodedText })
+                        }
+                    );
+
+                    const result = await response.json();
+
+                    showMessage(
+                        result.message || "Scan processed.",
+                        !response.ok || result.success === false
+                    );
+
+                    nextButton.hidden = false;
+                } catch (error) {
+                    showMessage(
+                        "Could not contact the server. Check your Wi-Fi and try again.",
+                        true
+                    );
+                    nextButton.hidden = false;
+                }
+            },
+            () => {}
+        );
+
+        scannerRunning = true;
+        showMessage("Camera ready. Point it at a visitor QR code.");
+
+    } catch (error) {
+        console.error(error);
+        showMessage(
+            "Unable to start camera. Allow camera permission and check HTTPS.",
+            true
+        );
+    }
+}
+
+nextButton.addEventListener("click", async () => {
+    nextButton.disabled = true;
+
+    try {
+        if (scanner && scannerRunning) {
+            await scanner.stop();
+            scannerRunning = false;
+        }
+
+        if (scanner) {
+            await scanner.clear();
+        }
+    } catch (error) {
+        console.warn("Scanner reset:", error);
+    }
+
+    scanner = null;
+    document.getElementById("reader").innerHTML = "";
+    nextButton.disabled = false;
+
+    await startScanner();
+});
+
+startScanner();
+</script>
+""" + SHELL_END
+
+
+# =========================================================
+# ATTENDANCE LOGS
+# =========================================================
+
+ATTENDANCE_PAGE = SHELL_START + """
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">Attendance Management</div>
+        <h1>Attendance Records</h1>
+        <p class="subtitle">
+            Review check-in and check-out history for registered visitors.
+        </p>
+    </div>
+    <a class="button" href="{{ url_for('scanner') }}">▦ Open QR Scanner</a>
+</div>
+
+<section class="panel">
+    <div class="panel-heading">
+        <h2>Visit History</h2>
+        <span class="badge badge-green">{{ records|length }} records</span>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Record ID</th>
+                    <th>Visitor</th>
+                    <th>Purpose</th>
+                    <th>Check-In</th>
+                    <th>Check-Out</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for record in records %}
+                <tr>
+                    <td>#{{ record.id }}</td>
+                    <td>
+                        <div class="visitor-name">{{ record.full_name }}</div>
+                        <span class="muted">Visitor #{{ record.visitor_id }}</span>
+                    </td>
+                    <td>{{ record.purpose }}</td>
+                    <td>{{ record.check_in or '-' }}</td>
+                    <td>{{ record.check_out or '-' }}</td>
+                    <td>
+                        {% if record.check_out %}
+                            <span class="badge">Checked out</span>
+                        {% else %}
+                            <span class="badge badge-green">Currently inside</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6">
+                        <div class="empty-state">
+                            No attendance records yet.
+                            <br><br>
+                            Scan a visitor's QR code to begin recording attendance.
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+""" + SHELL_END
+
+
+# =========================================================
+# ROUTES
+# =========================================================
+
+@app.route("/")
+def dashboard():
+    connection = get_db_connection()
+
+    try:
+        total_visitors = connection.execute(
+            "SELECT COUNT(*) AS total FROM visitors"
+        ).fetchone()["total"]
+
+        inside_count = connection.execute("""
+            SELECT COUNT(*) AS total
+            FROM attendance
+            WHERE check_out IS NULL
+        """).fetchone()["total"]
+
+        attendance_count = connection.execute(
+            "SELECT COUNT(*) AS total FROM attendance"
+        ).fetchone()["total"]
+
+        recent_records = connection.execute("""
+            SELECT attendance.id,
+                   attendance.visitor_id,
+                   attendance.check_in,
+                   attendance.check_out,
+                   visitors.full_name,
+                   visitors.purpose
+            FROM attendance
+            JOIN visitors ON visitors.id = attendance.visitor_id
+            ORDER BY attendance.id DESC
+            LIMIT 6
+        """).fetchall()
+
+        raw_chart = connection.execute("""
+            SELECT date(check_in) AS visit_date, COUNT(*) AS total
+            FROM attendance
+            WHERE date(check_in) >= date('now', '-6 days')
+            GROUP BY date(check_in)
+        """).fetchall()
+
+    finally:
+        connection.close()
+
+    count_by_day = {
+        row["visit_date"]: row["total"]
+        for row in raw_chart
+        if row["visit_date"]
+    }
+
+    chart_data = []
+
+    for offset in range(6, -1, -1):
+        day = date.today() - timedelta(days=offset)
+        count = count_by_day.get(day.isoformat(), 0)
+
+        chart_data.append({
+            "label": day.strftime("%a"),
+            "count": count,
+            "height":  max(5, round(count / max(
+                [count_by_day.get(
+                    (date.today() - timedelta(days=i)).isoformat(), 0
+                ) for i in range(7)] + [1]
+            ) * 100)),
+        })
+
+    return render_page(
+        DASHBOARD_PAGE,
+        "dashboard",
+        page_title="Dashboard",
+        total_visitors=total_visitors,
+        inside_count=inside_count,
+        attendance_count=attendance_count,
+        recent_records=recent_records,
+        chart_data=chart_data,
+    )
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    error = None
+    latest_visitor = None
+
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        contact_number = request.form.get("contact_number", "").strip()
+        purpose = request.form.get("purpose", "").strip()
+
+        if not full_name or not contact_number or not purpose:
+            error = "Please complete all required fields."
+
+        elif (
+            len(full_name) > 150
+            or len(contact_number) > 40
+            or len(purpose) > 250
+        ):
+            error = "One or more fields exceed the allowed length."
+
+        else:
+            token = secrets.token_urlsafe(32)
+            connection = get_db_connection()
+
+            try:
+                cursor = connection.execute("""
+                    INSERT INTO visitors
+                        (full_name, contact_number, purpose, qr_token)
+                    VALUES (?, ?, ?, ?)
+                """, (full_name, contact_number, purpose, token))
+
+                visitor_id = cursor.lastrowid
+                connection.commit()
+
+                create_qr_for_visitor(visitor_id, token)
+
+                return redirect(url_for(
+                    "register",
+                    saved="1",
+                    visitor_id=visitor_id,
+                ))
+
+            except Exception:
+                connection.rollback()
+                app.logger.exception("Visitor registration failed")
+                error = (
+                    "Registration could not be completed. "
+                    "Check the terminal for details."
+                )
+
+            finally:
+                connection.close()
+
+    connection = get_db_connection()
+
+    try:
+        visitor_id = request.args.get("visitor_id", type=int)
+
+        if request.args.get("saved") == "1" and visitor_id is not None:
+            latest_visitor = connection.execute(
+                "SELECT * FROM visitors WHERE id = ?",
+                (visitor_id,),
+            ).fetchone()
+
+    finally:
+        connection.close()
+
+    return render_page(
+        REGISTER_PAGE,
+        "register",
+        page_title="Register Visitor",
+        latest_visitor=latest_visitor,
+        error=error,
+    )
+
+
+@app.route("/visitors")
+def visitors_page():
+    connection = get_db_connection()
+
+    try:
+        visitors = connection.execute(
+            "SELECT * FROM visitors ORDER BY id DESC"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    return render_page(
+        VISITORS_PAGE,
+        "visitors",
+        page_title="Visitor Directory",
+        visitors=visitors,
+    )
+
+
+@app.route("/scanner")
+def scanner():
+    return render_page(
+        SCANNER_PAGE,
+        "scanner",
+        page_title="QR Scanner",
+    )
+
+
+@app.route("/scan", methods=["POST"])
+def process_scan():
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token", "")).strip()
+
+    if not token:
+        return jsonify(
+            success=False,
+            message="No QR token received.",
+        ), 400
+
+    connection = get_db_connection()
+
+    try:
+        visitor = connection.execute(
+            "SELECT id, full_name FROM visitors WHERE qr_token = ?",
+            (token,),
+        ).fetchone()
+
+        if visitor is None:
+            return jsonify(
+                success=False,
+                message="Unknown QR code. Register the visitor first.",
+            ), 404
+
+        open_visit = connection.execute("""
+            SELECT id
+            FROM attendance
+            WHERE visitor_id = ? AND check_out IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+        """, (visitor["id"],)).fetchone()
+
+        if open_visit:
+            connection.execute("""
+                UPDATE attendance
+                SET check_out = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (open_visit["id"],))
+
+            action = "check-out"
+            message = (
+                f"CHECK-OUT recorded for {visitor['full_name']} "
+                f"(Visitor ID {visitor['id']})."
+            )
+        else:
+            connection.execute("""
+                INSERT INTO attendance (visitor_id)
+                VALUES (?)
+            """, (visitor["id"],))
+
+            action = "check-in"
+            message = (
+                f"CHECK-IN recorded for {visitor['full_name']} "
+                f"(Visitor ID {visitor['id']})."
+            )
+
+        connection.commit()
+
+        return jsonify(
+            success=True,
+            message=message,
+            action=action,
+            visitor_id=visitor["id"],
+        )
+
+    except Exception:
+        connection.rollback()
+        app.logger.exception("Error processing QR scan")
+
+        return jsonify(
+            success=False,
+            message="Could not save attendance. Check the terminal.",
+        ), 500
+
+    finally:
+        connection.close()
+
+
+@app.route("/attendance")
+def attendance():
+    connection = get_db_connection()
+
+    try:
+        records = connection.execute("""
+            SELECT attendance.id,
+                   attendance.visitor_id,
+                   attendance.check_in,
+                   attendance.check_out,
+                   visitors.full_name,
+                   visitors.purpose
+            FROM attendance
+            JOIN visitors ON visitors.id = attendance.visitor_id
+            ORDER BY attendance.id DESC
+        """).fetchall()
+    finally:
+        connection.close()
+
+    return render_page(
+        ATTENDANCE_PAGE,
+        "attendance",
+        page_title="Attendance Records",
+        records=records,
+    )
+
+
+# =========================================================
+# START APPLICATION
+# =========================================================
+
+initialize_database()
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=True,
+    )
