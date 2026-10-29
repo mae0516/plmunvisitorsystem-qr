@@ -85,7 +85,9 @@ def create_qr_for_visitor(visitor_id, token):
     image.save(filepath)
 
 
+
 def initialize_database():
+    """Create required tables and preserve existing records."""
     connection = get_db_connection()
 
     try:
@@ -102,6 +104,7 @@ def initialize_database():
                 )
             """)
 
+            # Add the column safely if the table already exists.
             connection.execute("""
                 ALTER TABLE visitors
                 ADD COLUMN IF NOT EXISTS qr_token TEXT
@@ -117,7 +120,7 @@ def initialize_database():
             """)
 
         else:
-            # SQLite: Local computer
+            # SQLite: local computer
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS visitors (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,9 +140,9 @@ def initialize_database():
             }
 
             if "qr_token" not in columns:
-                connection.execute(
-                    "ALTER TABLE visitors ADD COLUMN qr_token TEXT"
-                )
+                connection.execute("""
+                    ALTER TABLE visitors ADD COLUMN qr_token TEXT
+                """)
 
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS attendance (
@@ -151,15 +154,13 @@ def initialize_database():
                 )
             """)
 
-        # Generate QR tokens for existing visitors that need them.
+        # Keep existing visitors and create tokens only when missing.
         visitors = connection.execute(
             "SELECT id, qr_token FROM visitors"
         ).fetchall()
 
         for visitor in visitors:
-            token = visitor["qr_token"]
-
-            if not token:
+            if not visitor["qr_token"]:
                 token = secrets.token_urlsafe(32)
 
                 db_execute(
@@ -167,8 +168,6 @@ def initialize_database():
                     "UPDATE visitors SET qr_token = ? WHERE id = ?",
                     (token, visitor["id"]),
                 )
-
-            create_qr_for_visitor(visitor["id"], token)
 
         connection.commit()
 
@@ -179,6 +178,7 @@ def initialize_database():
 
     finally:
         connection.close()
+
 
 # =========================================================
 # PROFESSIONAL SHARED DESIGN
