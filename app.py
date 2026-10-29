@@ -963,6 +963,7 @@ def render_page(template, active, **context):
     return render_template_string(template, **context)
 
 
+
 SHELL_START = """
 <!DOCTYPE html>
 <html lang="en">
@@ -970,17 +971,15 @@ SHELL_START = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
-    <title>{{ page_title }} | PLMun Visitor System</title>
-
-    <!-- PWA settings -->
-    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
     <meta name="theme-color" content="#123b68">
-
-    <!-- iPhone / iPad settings -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="PLMun Visitors">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+
+    <title>{{ page_title }} | PLMun Visitor System</title>
     <style>{{ style|safe }}</style>
 </head>
 <body>
@@ -1028,19 +1027,14 @@ SHELL_START = """
     <div class="main-area">
         <header class="topbar">
             <div>
-                <div class="topbar-label">
-                    PAMANTASAN NG LUNGSOD NG MUNTINLUPA
-                </div>
-                <div class="topbar-title">
-                    Visitor Monitoring &amp; Attendance
-                </div>
+                <div class="topbar-label">PAMANTASAN NG LUNGSOD NG MUNTINLUPA</div>
+                <div class="topbar-title">Visitor Monitoring &amp; Attendance</div>
             </div>
             <div class="admin-chip">
                 <div class="admin-avatar">A</div>
                 <span>Administrator</span>
             </div>
         </header>
-
         <main class="content">
 """
 
@@ -1054,6 +1048,7 @@ SHELL_END = """
 </body>
 </html>
 """
+
 
 # =========================================================
 # DASHBOARD
